@@ -1,0 +1,55 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: web-edit-binding
+  namespace: hackweb
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: web-edit-access
+subjects:
+- apiGroup: rbac.authorization.k8s.io
+  kind: Group
+  name: WEB_ID # Web group
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: web-read-binding
+  namespace: hackweb
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: web-view-access
+subjects:
+- apiGroup: rbac.authorization.k8s.io
+  kind: Group
+  name: API_ID # API group
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: api-edit-binding
+  namespace: hackweb
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: api-edit-access
+subjects:
+- apiGroup: rbac.authorization.k8s.io
+  kind: Group
+  name: API_ID # API group
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: api-read-binding
+  namespace: hackweb
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: api-view-access
+subjects:
+- apiGroup: rbac.authorization.k8s.io
+  kind: Group
+  name: WEB_ID # Web group

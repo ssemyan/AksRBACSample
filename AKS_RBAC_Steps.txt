@@ -1,0 +1,103 @@
+# Basic settings
+export AKS_RG=myresourcegroup
+export AKS_NAME=myclustername
+
+# if you want to allow the cluster to talk to your container registry
+export ACR_NAME=mycontainerregistry
+export ACR=${ACR_NAME}.azurecr.io
+
+
+#########################
+# Set up AKS w RBAC
+#########################
+
+#### Create Server Service Principal (may require special permissions in AAD Tenant)
+# Create the Azure AD application
+serverApplicationId=$(az ad app create --display-name "${AKS_NAME}Server" --identifier-uris "https://${AKS_NAME}Server" --query appId -o tsv)
+
+# Update the application group membership claims
+az ad app update --id $serverApplicationId --set groupMembershipClaims=All
+
+# Create a service principal for the Azure AD application
+az ad sp create --id $serverApplicationId
+
+# Get the service principal secret
+serverApplicationSecret=$(az ad sp credential reset --name $serverApplicationId --credential-description "AKSPassword" --query password -o tsv)
+
+# This next bit is often blocked for most users
+az ad app permission add --id $serverApplicationId --api 00000003-0000-0000-c000-000000000000 --api-permissions e1fe6dd8-ba31-4d61-89e7-88639da4683d=Scope 06da0dbc-49e2-44d2-8312-53f166ab848a=Scope 7ab1d382-f21e-4acd-a863-ba3e13f7da61=Role
+az ad app permission grant --id $serverApplicationId --api 00000003-0000-0000-c000-000000000000
+az ad app permission admin-consent --id  $serverApplicationId
+
+#### Create Client Service Principal (may require special permissions in AAD Tenant)
+clientApplicationId=$(az ad app create --display-name "${AKS_NAME}Client" --native-app --reply-urls "https://${AKS_NAME}Client" --query appId -o tsv)
+
+az ad sp create --id $clientApplicationId
+
+oAuthPermissionId=$(az ad app show --id $serverApplicationId --query "oauth2Permissions[0].id" -o tsv)
+
+az ad app permission add --id $clientApplicationId --api $serverApplicationId --api-permissions ${oAuthPermissionId}=Scope
+az ad app permission grant --id $clientApplicationId --api $serverApplicationId
+
+#### Create AKS Cluster with RBAC enabled
+tenantId=$(az account show --query tenantId -o tsv)
+
+# get subnet
+export subnetId=$(az network vnet subnet show --resource-group $AKS_RG --vnet-name vnet --name aks-subnet --query "id" -o tsv)
+
+# create cluster with rbac and acr access
+az aks create --resource-group $AKS_RG --name $AKS_NAME --node-count 1 --generate-ssh-keys --aad-server-app-id $serverApplicationId --aad-server-app-secret $serverApplicationSecret --aad-client-app-id $clientApplicationId --aad-tenant-id $tenantId --vnet-subnet-id $subnetId --attach-acr $ACR_NAME
+
+###########
+# RBAC Based Auth
+###########
+
+# create a new group - aksadmins
+APPDEV_ID=$(az ad group create --display-name ${AKS_NAME}_admins --mail-nickname appdev --query objectId -o tsv)
+AKS_ID=$(az aks show --resource-group $AKS_RG --name $AKS_NAME --query id -o tsv)
+
+# This lets anyone in that group interact with the cluster in Azure (but access to the API is via the cluster role created later)
+# Of course, owners/contributors in the resource group already have access
+az role assignment create --assignee $APPDEV_ID --role "Azure Kubernetes Service Cluster User Role" --scope $AKS_ID
+
+# add current user to the new admin group
+CURR_USER_ID=$(az ad signed-in-user show --query objectId -o tsv)
+az ad group member add --group ${AKS_NAME}_admins --member-id $CURR_USER_ID
+
+# Apply rbac roles (using value of APPDEV_ID from above in yaml)
+kubectl apply -f rbac.yaml
+
+# This is how admins would get access (using IAM to access the entire cluster)
+az aks get-credentials --resource-group $AKS_RG --name $AKS_NAME --admin
+
+# This is how users would get access to whatever they have been assigned
+az aks get-credentials --resource-group $AKS_RG --name $AKS_NAME --overwrite-existing
+
+#########################
+#### Namespaces
+#########################
+
+kubectl apply -f namespaces.yaml
+
+# recreate secret in hackapi so it can be used within the namespace
+kubectl create secret generic secrets-store-creds --from-literal clientid=$SP_CLIENT_ID --from-literal clientsecret=$SP_CLIENT_PASS --namespace=hackapi
+
+# set up new AD groups - web and api
+WEB_ID=$(az ad group create --display-name ${AKS_NAME}_web --mail-nickname hackweb --query objectId -o tsv)
+API_ID=$(az ad group create --display-name ${AKS_NAME}_api --mail-nickname hackapi --query objectId -o tsv)
+
+# create reader and writer roles for the two namespaces
+kubectl apply -f namespace_roles.yaml
+
+# set up the binding to the groups created above:
+kubectl apply -f namespace_role_binding.yaml (be sure to replace each group ID)
+
+# create a kubeconfig based on aad login
+az aks get-credentials --resource-group $AKS_RG --name $AKS_NAME -f my_new_kubeconfig
+
+# use the new kubeconfig to log in. Choosing a member of one of the groups above should display the functionality
+ kubectl get pods --namespace=hackweb --kubeconfig my_new_kubeconfig
+
+# may need to delete cache to prompt for new credentials. 
+mv ~/.kube/cache ~/.kube/cache.old
+mv ~/.kube/http-cache ~/.kube/cache.old
